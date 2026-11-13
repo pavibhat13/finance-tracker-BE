@@ -6,12 +6,19 @@ import Account from "../src/models/Account.js";
 import Category from "../src/models/Category.js";
 import Merchant from "../src/models/Merchant.js";
 import Transaction from "../src/models/Transaction.js";
+import RecurringRule from "../src/models/RecurringRule.js";
 import { seedInitialUserData } from "../src/services/seedService.js";
 import { createTransaction, voidTransaction, getTransactions } from "../src/services/transactionService.js";
 import { linkRefundToPurchase } from "../src/services/refundService.js";
 import { createAccountTransfer } from "../src/services/transferService.js";
 import { closeMonth, reopenMonth } from "../src/services/monthlyCloseService.js";
 import { upsertBudget, updateBudget, getBudgetsWithSpent } from "../src/services/budgetService.js";
+import {
+  createRecurringRule,
+  findCandidatesForRecurringRule,
+  linkRecurringRuleToTransaction,
+  updateRecurringRule
+} from "../src/services/recurringService.js";
 
 const TEST_MONGO_URI = "mongodb://127.0.0.1:27017/personal_finance_manager_test";
 
@@ -280,5 +287,53 @@ test("User can change password", async () => {
   assert.equal(matchNew, true);
   const matchOldFail = await updatedUser.comparePassword("Password123!");
   assert.equal(matchOldFail, false);
+});
+
+test("Recurring rule candidate search, linking to statement transaction, and rule update", async () => {
+  const user = await User.findOne({ email: "test@finance.local" });
+  const account = await Account.findOne({ userId: user._id });
+
+  // 1. Create statement transaction
+  const stmtTxn = await createTransaction(user._id, {
+    date: new Date("2026-11-07T00:00:00.000Z"),
+    description: "Plot Loan EMI Debit",
+    amount: 27978,
+    type: "EXPENSE",
+    accountId: account._id,
+    source: "IMPORT"
+  });
+
+  // 2. Create recurring rule due Nov 7
+  const rule = await createRecurringRule(user._id, {
+    description: "Plot Loan EMI",
+    amount: 27978,
+    type: "EXPENSE",
+    frequency: "MONTHLY",
+    accountId: account._id,
+    startDate: new Date("2026-11-07T00:00:00.000Z"),
+    nextDueDate: new Date("2026-11-07T00:00:00.000Z")
+  });
+
+  // 3. Find candidates
+  const candidates = await findCandidatesForRecurringRule(user._id, rule._id);
+  assert.equal(candidates.exactCandidates.length, 1);
+  assert.equal(candidates.exactCandidates[0]._id.toString(), stmtTxn._id.toString());
+
+  // 4. Link transaction to recurring rule
+  const linkResult = await linkRecurringRuleToTransaction(user._id, rule._id, stmtTxn._id);
+  assert.equal(linkResult.transaction.recurringRuleId.toString(), rule._id.toString());
+
+  // Next due date should have moved from Nov 7 to Dec 7
+  const updatedRule = await RecurringRule.findById(rule._id);
+  const nextMonth = new Date(updatedRule.nextDueDate).getUTCMonth();
+  assert.equal(nextMonth, 11); // 11 is December (0-indexed)
+
+  // 5. Update recurring rule (e.g. change nextDueDate or amount)
+  const editedRule = await updateRecurringRule(user._id, rule._id, {
+    amount: 28000,
+    nextDueDate: new Date("2027-01-07T00:00:00.000Z")
+  });
+  assert.equal(editedRule.amount, 28000);
+  assert.equal(new Date(editedRule.nextDueDate).getUTCFullYear(), 2027);
 });
 

@@ -1,4 +1,5 @@
 import RecurringRule from "../models/RecurringRule.js";
+import Transaction from "../models/Transaction.js";
 import { createTransaction } from "./transactionService.js";
 
 /**
@@ -67,11 +68,83 @@ export const executeRecurringRule = async (userId, ruleId) => {
     notes: `Generated from recurring rule (${rule.frequency})`
   });
 
+  txn.recurringRuleId = rule._id;
+  await txn.save();
+
   rule.lastGeneratedDate = new Date();
   rule.nextDueDate = calculateNextDate(rule.nextDueDate, rule.frequency);
   await rule.save();
 
   return { transaction: txn, updatedRule: rule };
+};
+
+/**
+ * Finds candidate transactions for a recurring rule
+ */
+export const findCandidatesForRecurringRule = async (userId, ruleId) => {
+  const rule = await RecurringRule.findOne({ _id: ruleId, userId });
+  if (!rule) throw new Error("Recurring rule not found");
+
+  const targetDate = new Date(rule.nextDueDate);
+  const startDate = new Date(targetDate);
+  startDate.setDate(startDate.getDate() - 10);
+  const endDate = new Date(targetDate);
+  endDate.setDate(endDate.getDate() + 10);
+
+  // Exact amount and account within +/- 10 days
+  const exactCandidates = await Transaction.find({
+    userId,
+    accountId: rule.accountId,
+    amount: rule.amount,
+    type: rule.type,
+    status: { $ne: "VOID" },
+    date: { $gte: startDate, $lte: endDate }
+  })
+    .populate("categoryId", "name type color icon")
+    .populate("accountId", "name")
+    .sort({ date: -1 });
+
+  // Other recent transactions for the same account
+  const broaderStartDate = new Date(targetDate);
+  broaderStartDate.setDate(broaderStartDate.getDate() - 30);
+  const otherRecent = await Transaction.find({
+    userId,
+    accountId: rule.accountId,
+    type: rule.type,
+    status: { $ne: "VOID" },
+    _id: { $nin: exactCandidates.map((t) => t._id) },
+    date: { $gte: broaderStartDate, $lte: endDate }
+  })
+    .populate("categoryId", "name type color icon")
+    .populate("accountId", "name")
+    .sort({ date: -1 })
+    .limit(10);
+
+  return {
+    rule,
+    exactCandidates,
+    otherRecent
+  };
+};
+
+/**
+ * Links an existing transaction to a recurring rule and advances nextDueDate
+ */
+export const linkRecurringRuleToTransaction = async (userId, ruleId, transactionId) => {
+  const rule = await RecurringRule.findOne({ _id: ruleId, userId });
+  if (!rule) throw new Error("Recurring rule not found");
+
+  const transaction = await Transaction.findOne({ _id: transactionId, userId });
+  if (!transaction) throw new Error("Transaction not found");
+
+  transaction.recurringRuleId = rule._id;
+  await transaction.save();
+
+  rule.lastGeneratedDate = transaction.date;
+  rule.nextDueDate = calculateNextDate(rule.nextDueDate, rule.frequency);
+  await rule.save();
+
+  return { transaction, updatedRule: rule };
 };
 
 /**

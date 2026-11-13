@@ -95,6 +95,12 @@ const transactionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "ImportBatch",
       default: null
+    },
+    recurringRuleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "RecurringRule",
+      default: null,
+      index: true
     }
   },
   {

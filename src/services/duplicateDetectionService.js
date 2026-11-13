@@ -73,6 +73,32 @@ export const checkRowDuplicate = async (userId, rowData) => {
     };
   }
 
+  // Check if matches a previously recorded recurring transaction
+  const recStartDate = new Date(targetDate);
+  recStartDate.setDate(recStartDate.getDate() - 3);
+  const recEndDate = new Date(targetDate);
+  recEndDate.setDate(recEndDate.getDate() + 3);
+
+  const existingRecurring = await Transaction.findOne({
+    userId,
+    accountId,
+    amount,
+    source: "RECURRING",
+    date: { $gte: recStartDate, $lte: recEndDate },
+    status: { $ne: "VOID" }
+  });
+
+  if (existingRecurring) {
+    const formattedDate = new Date(existingRecurring.date).toISOString().split("T")[0];
+    return {
+      duplicateStatus: "EXACT_FINGERPRINT",
+      duplicateReason: `Matches recurring bill '${existingRecurring.description}' recorded on ${formattedDate}`,
+      matchedTransactionId: existingRecurring._id,
+      isDuplicate: true,
+      isDefiniteDuplicate: true
+    };
+  }
+
   // Level 3: Possible duplicate (Same account, exact same amount, within +/- 2 days)
   const startDate = new Date(targetDate);
   startDate.setDate(startDate.getDate() - 2);

@@ -4,12 +4,14 @@ import ImportStaging from "../models/ImportStaging.js";
 import Transaction from "../models/Transaction.js";
 import Account from "../models/Account.js";
 import Category from "../models/Category.js";
+import RecurringRule from "../models/RecurringRule.js";
 import { parseStatementFile } from "./statementParsers/index.js";
 import { generateFingerprint } from "../utils/fingerprint.js";
 import { checkRowDuplicate } from "./duplicateDetectionService.js";
 import { categorizeTransaction } from "./categorizationService.js";
 import { logAudit } from "../utils/auditLogger.js";
 import { getAccountBalanceDelta } from "../utils/accountBalance.js";
+import { calculateNextDate } from "./recurringService.js";
 
 /**
  * Uploads, parses, detects duplicates, categorizes, and stages rows
@@ -307,6 +309,33 @@ export const confirmBatchImport = async (batchId, userId) => {
   let insertedDocs = [];
   if (transactionsToInsert.length > 0) {
     insertedDocs = await Transaction.insertMany(transactionsToInsert);
+
+    // Auto-reconcile active recurring rules if any imported transaction satisfies them
+    for (const doc of insertedDocs) {
+      const txnDate = new Date(doc.date);
+      const minDue = new Date(txnDate);
+      minDue.setDate(minDue.getDate() - 7);
+      const maxDue = new Date(txnDate);
+      maxDue.setDate(maxDue.getDate() + 7);
+
+      const matchingRule = await RecurringRule.findOne({
+        userId,
+        accountId: doc.accountId,
+        amount: doc.amount,
+        type: doc.type,
+        isActive: true,
+        nextDueDate: { $gte: minDue, $lte: maxDue }
+      });
+
+      if (matchingRule) {
+        doc.recurringRuleId = matchingRule._id;
+        await doc.save();
+
+        matchingRule.lastGeneratedDate = doc.date;
+        matchingRule.nextDueDate = calculateNextDate(matchingRule.nextDueDate, matchingRule.frequency);
+        await matchingRule.save();
+      }
+    }
   }
 
   // A statement's final running balance is authoritative. Fall back to the

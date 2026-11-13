@@ -4,7 +4,9 @@ import {
   executeRecurringRule,
   createRecurringRule,
   updateRecurringRule,
-  deleteRecurringRule
+  deleteRecurringRule,
+  findCandidatesForRecurringRule,
+  linkRecurringRuleToTransaction
 } from "../services/recurringService.js";
 
 export const getRecurring = async (req, res, next) => {
@@ -29,6 +31,28 @@ export const executeRecurring = async (req, res, next) => {
   try {
     const result = await executeRecurringRule(req.user._id, req.params.id);
     res.json({ success: true, message: "Recurring transaction executed", ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCandidates = async (req, res, next) => {
+  try {
+    const result = await findCandidatesForRecurringRule(req.user._id, req.params.id);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const linkTransaction = async (req, res, next) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) {
+      return res.status(400).json({ success: false, message: "transactionId is required" });
+    }
+    const result = await linkRecurringRuleToTransaction(req.user._id, req.params.id, transactionId);
+    res.json({ success: true, message: "Transaction linked to recurring rule", ...result });
   } catch (error) {
     next(error);
   }
