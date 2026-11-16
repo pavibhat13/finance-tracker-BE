@@ -7,8 +7,8 @@ import Category from "../models/Category.js";
 import RecurringRule from "../models/RecurringRule.js";
 import { parseStatementFile } from "./statementParsers/index.js";
 import { generateFingerprint } from "../utils/fingerprint.js";
-import { checkRowDuplicate } from "./duplicateDetectionService.js";
-import { categorizeTransaction } from "./categorizationService.js";
+import { checkRowDuplicate, buildDuplicateDetectionContext } from "./duplicateDetectionService.js";
+import { categorizeTransaction, buildCategorizationContext } from "./categorizationService.js";
 import { logAudit } from "../utils/auditLogger.js";
 import { getAccountBalanceDelta } from "../utils/accountBalance.js";
 import { calculateNextDate } from "./recurringService.js";
@@ -37,6 +37,26 @@ export const processStatementUpload = async ({
     const parseResult = await parseStatementFile(filePath, requestedFormat, password);
     batch.statementFormat = parseResult.format;
 
+    // Bulk pre-load duplicate detection & categorization contexts once for all rows
+    const [dupContext, catContext] = await Promise.all([
+      buildDuplicateDetectionContext(userId, accountId, parseResult.rows),
+      buildCategorizationContext(userId)
+    ]);
+
+    // Pre-resolve refund category once if any row could need it
+    let refundCategoryId = null;
+    const hasRefundRow = parseResult.rows.some(
+      (r) => r.type === "INCOME" && /\b(refund|reversal|chargeback)\b/i.test(r.cleanDescription)
+    );
+    if (hasRefundRow) {
+      const refundCategory = await Category.findOneAndUpdate(
+        { userId, name: "Online Refund", type: "INCOME" },
+        { $setOnInsert: { userId, name: "Online Refund", type: "INCOME", color: "#8b5cf6", icon: "undo-2" } },
+        { upsert: true, new: true }
+      );
+      refundCategoryId = refundCategory._id;
+    }
+
     const stagedDocs = [];
     let duplicateCount = 0;
     let acceptedCount = 0;
@@ -54,15 +74,19 @@ export const processStatementUpload = async ({
         description: row.cleanDescription
       });
 
-      // Run duplicate detection
-      const dupCheck = await checkRowDuplicate(userId, {
-        accountId,
-        date: row.date,
-        amount: row.amount,
-        referenceId: row.referenceId,
-        fingerprint,
-        cleanDescription: row.cleanDescription
-      });
+      // Run duplicate detection (fast in-memory)
+      const dupCheck = await checkRowDuplicate(
+        userId,
+        {
+          accountId,
+          date: row.date,
+          amount: row.amount,
+          referenceId: row.referenceId,
+          fingerprint,
+          cleanDescription: row.cleanDescription
+        },
+        dupContext
+      );
 
       if (dupCheck.isDefiniteDuplicate) {
         duplicateCount++;
@@ -70,19 +94,15 @@ export const processStatementUpload = async ({
         acceptedCount++;
       }
 
-      // Run auto-categorization
-      let catResult = await categorizeTransaction(userId, row.cleanDescription);
+      // Run auto-categorization (fast in-memory)
+      let catResult = await categorizeTransaction(userId, row.cleanDescription, catContext);
       if (
         !catResult.categoryId &&
         row.type === "INCOME" &&
-        /\b(refund|reversal|chargeback)\b/i.test(row.cleanDescription)
+        /\b(refund|reversal|chargeback)\b/i.test(row.cleanDescription) &&
+        refundCategoryId
       ) {
-        const refundCategory = await Category.findOneAndUpdate(
-          { userId, name: "Online Refund", type: "INCOME" },
-          { $setOnInsert: { userId, name: "Online Refund", type: "INCOME", color: "#8b5cf6", icon: "undo-2" } },
-          { upsert: true, new: true }
-        );
-        catResult = { ...catResult, categoryId: refundCategory._id };
+        catResult = { ...catResult, categoryId: refundCategoryId };
       }
 
       stagedDocs.push({
@@ -194,19 +214,27 @@ export const updateStagedRow = async (batchId, rowId, userId, updateData) => {
  */
 export const recheckBatchDuplicates = async (batchId, userId) => {
   const stagedRows = await ImportStaging.find({ batchId, userId });
+  const batch = await ImportBatch.findById(batchId);
+  const dupContext = batch
+    ? await buildDuplicateDetectionContext(userId, batch.accountId, stagedRows)
+    : null;
 
   let duplicateCount = 0;
   let acceptedCount = 0;
 
   for (const row of stagedRows) {
-    const dupCheck = await checkRowDuplicate(userId, {
-      accountId: row.accountId,
-      date: row.date,
-      amount: row.amount,
-      referenceId: row.referenceId,
-      fingerprint: row.fingerprint,
-      cleanDescription: row.cleanDescription
-    });
+    const dupCheck = await checkRowDuplicate(
+      userId,
+      {
+        accountId: row.accountId,
+        date: row.date,
+        amount: row.amount,
+        referenceId: row.referenceId,
+        fingerprint: row.fingerprint,
+        cleanDescription: row.cleanDescription
+      },
+      dupContext
+    );
 
     row.duplicateStatus = dupCheck.duplicateStatus;
     row.duplicateReason = dupCheck.duplicateReason;

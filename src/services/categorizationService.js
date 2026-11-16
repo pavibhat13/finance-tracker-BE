@@ -3,13 +3,24 @@ import CategorizationRule from "../models/CategorizationRule.js";
 import { normalizeDescription } from "../utils/fingerprint.js";
 
 /**
+ * Loads categorization context (merchants & rules) once in bulk for fast in-memory categorization
+ */
+export const buildCategorizationContext = async (userId) => {
+  const [merchants, rules] = await Promise.all([
+    Merchant.find({ userId, isActive: true }),
+    CategorizationRule.find({ userId, isActive: true }).sort({ priority: 1 })
+  ]);
+  return { merchants, rules };
+};
+
+/**
  * Categorizes a single description using merchant matching and rule priority
  */
-export const categorizeTransaction = async (userId, description = "") => {
+export const categorizeTransaction = async (userId, description = "", context = null) => {
   const normalizedDesc = normalizeDescription(description);
 
   // 1. Try finding matching merchant
-  const merchants = await Merchant.find({ userId, isActive: true });
+  const merchants = context?.merchants || (await Merchant.find({ userId, isActive: true }));
   for (const merchant of merchants) {
     if (
       normalizedDesc.includes(merchant.normalizedName) ||
@@ -26,7 +37,9 @@ export const categorizeTransaction = async (userId, description = "") => {
   }
 
   // 2. Query active categorization rules ordered by priority ascending
-  const rules = await CategorizationRule.find({ userId, isActive: true }).sort({ priority: 1 });
+  const rules =
+    context?.rules ||
+    (await CategorizationRule.find({ userId, isActive: true }).sort({ priority: 1 }));
 
   for (const rule of rules) {
     const pattern = rule.matchValue.trim().toLowerCase();
