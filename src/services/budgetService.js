@@ -19,7 +19,7 @@ export const getBudgetsWithSpent = async (userId, { month, year }) => {
     "name type color icon"
   );
 
-  // 2. Fetch spending per category for this month
+  // 2. Fetch spending per category for this month (net of linked reimbursements/refunds)
   const categorySpending = await Transaction.aggregate([
     {
       $match: {
@@ -32,13 +32,51 @@ export const getBudgetsWithSpent = async (userId, { month, year }) => {
       }
     },
     {
+      $lookup: {
+        from: "transactions",
+        let: { origId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$linkedTransactionId", "$$origId"] },
+                  { $ne: ["$status", "VOID"] }
+                ]
+              }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              totalRefund: { $sum: "$amount" }
+            }
+          }
+        ],
+        as: "refunds"
+      }
+    },
+    {
+      $project: {
+        categoryId: 1,
+        amount: 1,
+        refundAmount: { $ifNull: [{ $arrayElemAt: ["$refunds.totalRefund", 0] }, 0] }
+      }
+    },
+    {
+      $project: {
+        categoryId: 1,
+        netAmount: {
+          $max: [0, { $subtract: ["$amount", "$refundAmount"] }]
+        }
+      }
+    },
+    {
       $group: {
         _id: "$categoryId",
         expenses: {
-          $sum: {
-            $cond: [{ $eq: ["$type", "EXPENSE"] }, "$amount", 0]
-          }
-        },
+          $sum: "$netAmount"
+        }
       }
     }
   ]);

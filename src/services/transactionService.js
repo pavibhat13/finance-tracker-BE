@@ -152,6 +152,20 @@ export const getTransactions = async (userId, query = {}) => {
                 0
               ]
             }
+          },
+          totalReimbursed: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ["$linkedTransactionId", null] },
+                    { $eq: ["$type", "INCOME"] }
+                  ]
+                },
+                "$amount",
+                0
+              ]
+            }
           }
         }
       }
@@ -160,8 +174,45 @@ export const getTransactions = async (userId, query = {}) => {
 
   const totals = totalsResult[0] || {};
 
+  // Enrich EXPENSE transactions with any linked refunds/reimbursements
+  const expenseIds = transactions.filter((t) => t.type === "EXPENSE").map((t) => t._id);
+  const linkedCredits =
+    expenseIds.length > 0
+      ? await Transaction.find({
+          userId,
+          linkedTransactionId: { $in: expenseIds },
+          status: { $ne: "VOID" }
+        }).select("_id amount description date linkedTransactionId")
+      : [];
+
+  const refundMap = new Map();
+  linkedCredits.forEach((c) => {
+    const parentId = String(c.linkedTransactionId);
+    if (!refundMap.has(parentId)) {
+      refundMap.set(parentId, []);
+    }
+    refundMap.get(parentId).push({
+      _id: c._id,
+      amount: c.amount,
+      description: c.description,
+      date: c.date
+    });
+  });
+
+  const enrichedTransactions = transactions.map((t) => {
+    const doc = t.toObject ? t.toObject() : { ...t };
+    if (doc.type === "EXPENSE") {
+      const refunds = refundMap.get(String(doc._id)) || [];
+      const reimbursedAmount = refunds.reduce((sum, r) => sum + r.amount, 0);
+      doc.linkedRefunds = refunds;
+      doc.reimbursedAmount = Math.round(reimbursedAmount * 100) / 100;
+      doc.netAmount = Math.max(0, Math.round((doc.amount - reimbursedAmount) * 100) / 100);
+    }
+    return doc;
+  });
+
   return {
-    transactions,
+    transactions: enrichedTransactions,
     pagination: {
       page,
       limit,
@@ -171,6 +222,7 @@ export const getTransactions = async (userId, query = {}) => {
     totals: {
       debit: Math.round((totals.totalDebit || 0) * 100) / 100,
       credit: Math.round((totals.totalCredit || 0) * 100) / 100,
+      reimbursed: Math.round((totals.totalReimbursed || 0) * 100) / 100,
       selfTransferOut: Math.round((totals.selfTransferOut || 0) * 100) / 100,
       selfTransferIn: Math.round((totals.selfTransferIn || 0) * 100) / 100
     }

@@ -19,6 +19,7 @@ import {
   linkRecurringRuleToTransaction,
   updateRecurringRule
 } from "../src/services/recurringService.js";
+import { getDashboardSummary, getCategoryBreakdown } from "../src/services/dashboardService.js";
 
 const TEST_MONGO_URI = "mongodb://127.0.0.1:27017/personal_finance_manager_test";
 
@@ -336,4 +337,74 @@ test("Recurring rule candidate search, linking to statement transaction, and rul
   assert.equal(editedRule.amount, 28000);
   assert.equal(new Date(editedRule.nextDueDate).getUTCFullYear(), 2027);
 });
+
+test("Reimbursement linking deducts from dashboard net expenses, category breakdown, and budget spending", async () => {
+  const user = await User.findOne({ email: "test@finance.local" });
+  const account = await Account.findOne({ userId: user._id, accountType: "BANK" });
+  const entCategory = await Category.findOne({ userId: user._id, name: "Entertainment" });
+
+  // Set a budget of 2000 for Entertainment for Nov 2026
+  await upsertBudget(user._id, {
+    categoryId: entCategory._id,
+    month: 11,
+    year: 2026,
+    limit: 2000
+  });
+
+  // 1. Create original movie ticket expense of 1000
+  const movieExpense = await createTransaction(user._id, {
+    date: new Date("2026-11-15T18:00:00.000Z"),
+    description: "PVR Cinemas Movie Ticket",
+    amount: 1000,
+    type: "EXPENSE",
+    categoryId: entCategory._id,
+    accountId: account._id,
+    notes: "Movie with friend"
+  });
+
+  // 2. Create friend's UPI repayment of 500
+  const friendRepayment = await createTransaction(user._id, {
+    date: new Date("2026-11-16T10:00:00.000Z"),
+    description: "UPI from Friend Rahul",
+    amount: 500,
+    type: "INCOME",
+    accountId: account._id,
+    notes: "Movie share repayment"
+  });
+
+  // Link friend repayment to the movie expense
+  await linkRefundToPurchase(user._id, {
+    refundTransactionId: friendRepayment._id,
+    originalTransactionId: movieExpense._id
+  });
+
+  // 3. Verify getTransactions returns netAmount: 500 and reimbursedAmount: 500
+  const txList = await getTransactions(user._id, { search: "PVR Cinemas" });
+  assert.equal(txList.transactions.length, 1);
+  const foundExpense = txList.transactions[0];
+  assert.equal(foundExpense.reimbursedAmount, 500);
+  assert.equal(foundExpense.netAmount, 500);
+  assert.equal(foundExpense.linkedRefunds.length, 1);
+
+  // 4. Verify getDashboardSummary reflects net expenses
+  const dashSummary = await getDashboardSummary(user._id, { month: 11, year: 2026 });
+  assert.equal(dashSummary.totalRefunds, 1000);
+  // Net expenses should be grossExpenses - 1000
+  assert.equal(dashSummary.netExpenses, dashSummary.grossExpenses - 1000);
+
+  // 5. Verify getCategoryBreakdown has net spent = 500 for Entertainment
+  const catBreakdown = await getCategoryBreakdown(user._id, { month: 11, year: 2026 });
+  const entBreakdown = catBreakdown.find((c) => String(c.categoryId) === String(entCategory._id));
+  assert.ok(entBreakdown);
+  assert.equal(entBreakdown.total, 500);
+
+  // 6. Verify getBudgetsWithSpent has spent = 500 for Entertainment
+  const budgets = await getBudgetsWithSpent(user._id, { month: 11, year: 2026 });
+  const entBudget = budgets.budgets.find((b) => String(b.category._id) === String(entCategory._id));
+  assert.ok(entBudget);
+  assert.equal(entBudget.spent, 500);
+  assert.equal(entBudget.remaining, 1500);
+  assert.equal(entBudget.percentage, 25);
+});
+
 

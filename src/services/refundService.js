@@ -41,12 +41,14 @@ export const linkRefundToPurchase = async (
   // Update refund transaction
   refundTxn.type = "INCOME";
   refundTxn.linkedTransactionId = originalTxn._id;
-  const refundCategory = await Category.findOneAndUpdate(
-    { userId, name: "Online Refund", type: "INCOME" },
-    { $setOnInsert: { userId, name: "Online Refund", type: "INCOME", color: "#8b5cf6", icon: "undo-2" } },
-    { upsert: true, new: true }
-  );
-  refundTxn.categoryId = refundCategory._id;
+  if (!refundTxn.categoryId) {
+    const refundCategory = await Category.findOneAndUpdate(
+      { userId, name: "Reimbursement & Refunds", type: "INCOME" },
+      { $setOnInsert: { userId, name: "Reimbursement & Refunds", type: "INCOME", color: "#8b5cf6", icon: "undo-2" } },
+      { upsert: true, new: true }
+    );
+    refundTxn.categoryId = refundCategory._id;
+  }
   await refundTxn.save();
 
   await logAudit({

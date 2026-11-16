@@ -93,6 +93,16 @@ const importStagingSchema = new mongoose.Schema(
     notes: {
       type: String,
       default: ""
+    },
+    linkedTransactionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Transaction",
+      default: null
+    },
+    linkedStagedRowId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ImportStaging",
+      default: null
     }
   },
   {

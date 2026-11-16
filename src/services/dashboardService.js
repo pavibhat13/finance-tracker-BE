@@ -25,7 +25,10 @@ export const getDashboardSummary = async (userId, { month, year }) => {
     },
     {
       $group: {
-        _id: "$type",
+        _id: {
+          type: "$type",
+          isRefund: { $ne: ["$linkedTransactionId", null] }
+        },
         total: { $sum: "$amount" }
       }
     }
@@ -33,14 +36,22 @@ export const getDashboardSummary = async (userId, { month, year }) => {
 
   let totalIncome = 0;
   let grossExpenses = 0;
+  let totalRefunds = 0;
 
   totals.forEach((item) => {
-    if (item._id === "INCOME") totalIncome = item.total;
-    if (item._id === "EXPENSE") grossExpenses = item.total;
+    if (item._id.type === "INCOME") {
+      if (item._id.isRefund) {
+        totalRefunds += item.total;
+      } else {
+        totalIncome += item.total;
+      }
+    }
+    if (item._id.type === "EXPENSE") {
+      grossExpenses += item.total;
+    }
   });
 
-  const totalRefunds = 0;
-  const netExpenses = grossExpenses;
+  const netExpenses = Math.max(0, grossExpenses - totalRefunds);
   const netSavings = totalIncome - netExpenses;
   const savingsRate = totalIncome > 0 ? Math.round((netSavings / totalIncome) * 100 * 10) / 10 : 0;
 
@@ -109,7 +120,8 @@ export const getMonthlyTrends = async (userId, year) => {
       $group: {
         _id: {
           month: { $month: "$date" },
-          type: "$type"
+          type: "$type",
+          isRefund: { $ne: ["$linkedTransactionId", null] }
         },
         total: { $sum: "$amount" }
       }
@@ -124,17 +136,25 @@ export const getMonthlyTrends = async (userId, year) => {
   const result = monthNames.map((name, index) => {
     const monthNum = index + 1;
     let income = 0;
-    let expense = 0;
+    let grossExpense = 0;
+    let refund = 0;
 
     monthlyData.forEach((row) => {
       if (row._id.month === monthNum) {
-        if (row._id.type === "INCOME") income = row.total;
-        if (row._id.type === "EXPENSE") expense = row.total;
+        if (row._id.type === "INCOME") {
+          if (row._id.isRefund) {
+            refund += row.total;
+          } else {
+            income += row.total;
+          }
+        }
+        if (row._id.type === "EXPENSE") {
+          grossExpense += row.total;
+        }
       }
     });
 
-    const refund = 0;
-    const netExpense = expense;
+    const netExpense = Math.max(0, grossExpense - refund);
     const savings = income - netExpense;
 
     return {
@@ -142,7 +162,7 @@ export const getMonthlyTrends = async (userId, year) => {
       monthNum,
       income: Math.round(income),
       expense: Math.round(netExpense),
-      grossExpense: Math.round(expense),
+      grossExpense: Math.round(grossExpense),
       refund: Math.round(refund),
       savings: Math.round(savings)
     };
@@ -173,9 +193,49 @@ export const getCategoryBreakdown = async (userId, { month, year }) => {
       }
     },
     {
+      $lookup: {
+        from: "transactions",
+        let: { origId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [
+                  { $eq: ["$linkedTransactionId", "$$origId"] },
+                  { $ne: ["$status", "VOID"] }
+                ]
+              }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              totalRefund: { $sum: "$amount" }
+            }
+          }
+        ],
+        as: "refunds"
+      }
+    },
+    {
+      $project: {
+        categoryId: 1,
+        amount: 1,
+        refundAmount: { $ifNull: [{ $arrayElemAt: ["$refunds.totalRefund", 0] }, 0] }
+      }
+    },
+    {
+      $project: {
+        categoryId: 1,
+        netAmount: {
+          $max: [0, { $subtract: ["$amount", "$refundAmount"] }]
+        }
+      }
+    },
+    {
       $group: {
         _id: "$categoryId",
-        total: { $sum: "$amount" },
+        total: { $sum: "$netAmount" },
         count: { $sum: 1 }
       }
     },

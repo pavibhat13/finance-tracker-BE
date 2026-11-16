@@ -164,7 +164,9 @@ export const getStagedRows = async (batchId, userId) => {
     .sort({ rowNumber: 1 })
     .populate("categoryId", "name type color icon")
     .populate("merchantId", "name")
-    .populate("matchedTransactionId", "date description amount type");
+    .populate("matchedTransactionId", "date description amount type")
+    .populate("linkedTransactionId", "date description amount")
+    .populate("linkedStagedRowId", "cleanDescription amount type date");
 };
 
 /**
@@ -181,7 +183,9 @@ export const updateStagedRow = async (batchId, rowId, userId, updateData) => {
     "categoryId",
     "included",
     "notes",
-    "isManuallyCategorized"
+    "isManuallyCategorized",
+    "linkedTransactionId",
+    "linkedStagedRowId"
   ];
 
   allowedUpdates.forEach((field) => {
@@ -328,7 +332,8 @@ export const confirmBatchImport = async (batchId, userId) => {
       status: "ACTIVE",
       notes: row.notes,
       isManuallyCategorized: row.isManuallyCategorized,
-      importBatchId: batch._id
+      importBatchId: batch._id,
+      linkedTransactionId: row.linkedTransactionId || null
     });
 
     balanceDelta += getAccountBalanceDelta(account.accountType, row.type, row.amount);
@@ -337,6 +342,23 @@ export const confirmBatchImport = async (batchId, userId) => {
   let insertedDocs = [];
   if (transactionsToInsert.length > 0) {
     insertedDocs = await Transaction.insertMany(transactionsToInsert);
+
+    // Map staging rows to inserted docs for intra-batch linking
+    const stagingToDocMap = new Map();
+    for (let i = 0; i < includedRows.length; i++) {
+      stagingToDocMap.set(String(includedRows[i]._id), insertedDocs[i]);
+    }
+
+    for (let i = 0; i < includedRows.length; i++) {
+      const stagedRow = includedRows[i];
+      if (stagedRow.linkedStagedRowId) {
+        const targetDoc = stagingToDocMap.get(String(stagedRow.linkedStagedRowId));
+        if (targetDoc) {
+          insertedDocs[i].linkedTransactionId = targetDoc._id;
+          await insertedDocs[i].save();
+        }
+      }
+    }
 
     // Auto-reconcile active recurring rules if any imported transaction satisfies them
     for (const doc of insertedDocs) {
