@@ -13,10 +13,12 @@ import transferRoutes from "./transferRoutes.js";
 import refundRoutes from "./refundRoutes.js";
 import monthlyCloseRoutes from "./monthlyCloseRoutes.js";
 import backupRoutes from "./backupRoutes.js";
+import adminRoutes from "./adminRoutes.js";
 
 const router = express.Router();
 
 router.use("/auth", authRoutes);
+router.use("/admin", adminRoutes);
 router.use("/accounts", accountRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/merchants", merchantRoutes);

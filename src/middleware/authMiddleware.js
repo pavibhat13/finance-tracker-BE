@@ -33,6 +33,13 @@ export const protect = async (req, res, next) => {
       });
     }
 
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account has been deactivated. Please contact an administrator."
+      });
+    }
+
     req.user = user;
     next();
   } catch (error) {
@@ -41,4 +48,14 @@ export const protect = async (req, res, next) => {
       message: "Not authorized, token invalid or expired"
     });
   }
+};
+
+export const adminOnly = (req, res, next) => {
+  if (!req.user || req.user.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "Access denied. Administrator privileges required."
+    });
+  }
+  next();
 };

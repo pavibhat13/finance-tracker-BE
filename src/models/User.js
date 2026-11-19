@@ -22,6 +22,15 @@ const userSchema = new mongoose.Schema(
     currency: {
       type: String,
       default: "INR"
+    },
+    role: {
+      type: String,
+      enum: ["ADMIN", "USER"],
+      default: "USER"
+    },
+    isActive: {
+      type: Boolean,
+      default: true
     }
   },
   {
